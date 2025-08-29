@@ -1,6 +1,6 @@
 {
   "name": "trie-search-plus",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Trie-based autocomplete/search library for Node.js, Angular, and React",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -27,5 +27,13 @@
     "@babel/core": "^7.24.0",
     "@babel/preset-env": "^7.24.0",
     "jest": "^29.0.0"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bharath1708/trie-search-plus.git"
+  },
+  "bugs": {
+    "url": "https://github.com/bharath1708/trie-search-plus/issues"
+  },
+  "homepage": "https://github.com/bharath1708/trie-search-plus#readme"
 }
