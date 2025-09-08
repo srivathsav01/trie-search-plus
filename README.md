@@ -30,9 +30,9 @@ import { Trie } from 'trie-search-plus';
 const trie = new Trie();
 
 // Insert words
-trie.insert('apple');
-trie.insert('application');
-trie.insert('banana');
+await trie.insert('apple');
+await trie.insert('application');
+await trie.insert('banana');
 
 // Search for words
 console.log(trie.search('apple')); // true

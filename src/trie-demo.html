@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Enhanced Trie with Web Worker Demo</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 5px;
+            font-size: 14px;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .progress-bar {
+            width: 100%;
+            height: 20px;
+            background: #e9ecef;
+            border-radius: 10px;
+            margin: 10px 0;
+            overflow: hidden;
+        }
+        .progress-fill {
+            height: 100%;
+            background: #28a745;
+            width: 0%;
+            transition: width 0.3s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 12px;
+        }
+        .results {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 10px 0;
+            border-left: 4px solid #007bff;
+        }
+        .error {
+            background: #f8d7da;
+            border-left-color: #dc3545;
+            color: #721c24;
+        }
+        .log {
+            background: #333;
+            color: #00ff00;
+            padding: 15px;
+            border-radius: 5px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            max-height: 200px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+        }
+        input {
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            margin: 5px;
+        }
+        .worker-info {
+            background: #e3f2fd;
+            border-left: 4px solid #2196f3;
+            padding: 15px;
+            margin: 10px 0;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🌲 Enhanced Trie with Web Worker Demo</h1>
+        <p>This demo shows the enhanced Trie data structure with automatic web worker support for large datasets.</p>
+        <div class="worker-info">
+            <strong>Worker Status:</strong> <span id="workerStatus">Checking...</span><br>
+            <strong>Note:</strong> Web worker will be used automatically for datasets > 500,000 items.
+        </div>
+    </div>
+
+    <div class="container">
+        <h2>📊 Quick Tests</h2>
+        <button onclick="testSmallDataset()">Test Small Dataset (1K words)</button>
+        <button onclick="testMediumDataset()">Test Medium Dataset (50K words)</button>
+        <button onclick="testLargeDataset()" id="largeBtn">Test Large Dataset (1M words)</button>
+        <button onclick="testWorkerForced()">Force Worker Test (10K words)</button>
+        
+        <div class="progress-bar" style="display: none;" id="progressBar">
+            <div class="progress-fill" id="progressFill">0%</div>
+        </div>
+        
+        <div id="results"></div>
+    </div>
+
+    <div class="container">
+        <h2>🔍 Search & Test</h2>
+        <input type="text" id="searchInput" placeholder="Enter word to search" />
+        <button onclick="searchWord()">Search</button>
+        <button onclick="autocompleteWord()">Autocomplete</button>
+        <button onclick="showStats()">Show Stats</button>
+        <div id="searchResults"></div>
+    </div>
+
+    <div class="container">
+        <h2>📝 Console Log</h2>
+        <div id="console" class="log">Ready to test...\n</div>
+        <button onclick="clearLog()">Clear Log</button>
+    </div>
+
+    <script type="module">
+        // Global trie instance
+        let globalTrie = null;
+
+        // Check if we can load the Trie class
+        async function initializeTrie() {
+            try {
+                const { Trie } = await import('./trie.js');
+                globalTrie = new Trie();
+                logToConsole('✅ Trie module loaded successfully');
+                updateWorkerStatus('Ready');
+                return true;
+            } catch (error) {
+                logToConsole('❌ Failed to load Trie module: ' + error.message);
+                updateWorkerStatus('Module load failed');
+                return false;
+            }
+        }
+
+        function updateWorkerStatus(status) {
+            document.getElementById('workerStatus').textContent = status;
+        }
+
+        // Check worker support
+        function checkWorkerSupport() {
+            if (typeof Worker !== 'undefined') {
+                logToConsole('✅ Web Worker support detected');
+                return true;
+            } else {
+                logToConsole('❌ Web Worker not supported in this browser');
+                updateWorkerStatus('Not supported');
+                return false;
+            }
+        }
+
+        // Utility functions
+        function generateWords(count, prefix = 'word') {
+            clearResults();
+            hideProgress();
+            const words = [];
+            const suffixes = ['ing', 'ed', 'er', 's', 'ly', 'tion', 'able', 'ness'];
+            
+            for (let i = 0; i < count; i++) {
+                if (i % 3 === 0) {
+                    words.push(`${prefix}${i}`);
+                } else if (i % 3 === 1) {
+                    const suffix = suffixes[i % suffixes.length];
+                    words.push(`${prefix}${Math.floor(i/3)}${suffix}`);
+                } else {
+                    words.push(`test${i}_${prefix}`);
+                }
+            }
+            return words;
+        }
+
+        function logToConsole(message) {
+            const consoleEl = document.getElementById('console');
+            const timestamp = new Date().toLocaleTimeString();
+            consoleEl.textContent += `[${timestamp}] ${message}\n`;
+            consoleEl.scrollTop = consoleEl.scrollHeight;
+        }
+
+        function showProgress(progress) {
+            const progressBar = document.getElementById('progressBar');
+            const progressFill = document.getElementById('progressFill');
+            
+            progressBar.style.display = 'block';
+            progressFill.style.width = `${progress.percentage}%`;
+            progressFill.textContent = `${progress.percentage}% (${progress.processed}/${progress.total})`;
+        }
+
+        function hideProgress() {
+            document.getElementById('progressBar').style.display = 'none';
+        }
+
+        function showResults(content, isError = false) {
+            const resultsEl = document.getElementById('results');
+            resultsEl.innerHTML = `<div class="results ${isError ? 'error' : ''}">${content}</div>`;
+        }
+
+        function showSearchResults(content) {
+            const searchResultsEl = document.getElementById('searchResults');
+            searchResultsEl.innerHTML = `<div class="results">${content}</div>`;
+        }
+
+        function clearResults() {
+            document.getElementById('results').innerHTML = '';
+            document.getElementById('searchResults').innerHTML = '';
+        }
+
+        // Test functions
+        window.testSmallDataset = async function() {
+            if (!globalTrie) {
+                showResults('❌ Trie not initialized', true);
+                return;
+            }
+            
+            logToConsole('Starting small dataset test (1K words)...');
+            const words = generateWords(1000, 'small');
+            
+            const startTime = performance.now();
+            const result = await globalTrie.insert(words, {
+                onProgress: showProgress
+            });
+            const endTime = performance.now();
+            
+            hideProgress();
+            const time = Math.round(endTime - startTime);
+            logToConsole(`Small dataset inserted in ${time}ms - Success: ${result.success}`);
+            showResults(`✅ Successfully inserted 1,000 words in ${time}ms (Main Thread)`);
+        };
+
+        window.testMediumDataset = async function() {
+            if (!globalTrie) {
+                showResults('❌ Trie not initialized', true);
+                return;
+            }
+            
+            logToConsole('Starting medium dataset test (50K words)...');
+            const words = generateWords(50000, 'medium');
+            
+            const startTime = performance.now();
+            const result = await globalTrie.insert(words, {
+                onProgress: showProgress
+            });
+            const endTime = performance.now();
+            
+            hideProgress();
+            const time = Math.round(endTime - startTime);
+            logToConsole(`Medium dataset inserted in ${time}ms - Success: ${result.success}`);
+            showResults(`✅ Successfully inserted 50,000 words in ${time}ms (Main Thread)`);
+        };
+
+        window.testLargeDataset = async function() {
+            if (!globalTrie) {
+                showResults('❌ Trie not initialized', true);
+                return;
+            }
+            
+            const btn = document.getElementById('largeBtn');
+            btn.disabled = true;
+            btn.textContent = 'Processing...';
+            
+            try {
+                logToConsole('Starting large dataset test (1M words)...');
+                const words = generateWords(1000000, 'large');
+                
+                const startTime = performance.now();
+                const result = await globalTrie.insert(words, {
+                    onProgress: showProgress
+                });
+                const endTime = performance.now();
+                
+                hideProgress();
+                const time = Math.round(endTime - startTime);
+                logToConsole(`Large dataset inserted in ${time}ms - Success: ${result.success}`);
+                showResults(`✅ Successfully inserted 1,000,000 words in ${time}ms (Web Worker)`);
+            } catch (error) {
+                logToConsole(`Error: ${error.message}`);
+                showResults(`❌ Error: ${error.message}`, true);
+                hideProgress();
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Test Large Dataset (1M words)';
+            }
+        };
+
+        window.testWorkerForced = async function() {
+            if (!globalTrie) {
+                showResults('❌ Trie not initialized', true);
+                return;
+            }
+            
+            logToConsole('Starting forced worker test (10K words)...');
+            const words = generateWords(10000, 'forced');
+            
+            try {
+                const startTime = performance.now();
+                const result = await globalTrie.insert(words, {
+                    useWorker: true, // Force worker usage
+                    onProgress: showProgress
+                });
+                const endTime = performance.now();
+                
+                hideProgress();
+                const time = Math.round(endTime - startTime);
+                logToConsole(`Forced worker test completed in ${time}ms - Success: ${result.success}`);
+                showResults(`✅ Successfully inserted 10,000 words in ${time}ms (Forced Web Worker)`);
+            } catch (error) {
+                logToConsole(`Forced worker error: ${error.message}`);
+                showResults(`❌ Worker Error: ${error.message}`, true);
+                hideProgress();
+            }
+        };
+
+        window.searchWord = function() {
+            if (!globalTrie) {
+                showSearchResults('❌ Trie not initialized');
+                return;
+            }
+            
+            const input = document.getElementById('searchInput');
+            const word = input.value.trim();
+            
+            if (!word) {
+                showSearchResults('Please enter a word to search');
+                return;
+            }
+            
+            const found = globalTrie.search(word);
+            const hasPrefix = globalTrie.startsWith(word);
+            
+            logToConsole(`Searched for "${word}" - Found: ${found}, Has prefix: ${hasPrefix}`);
+            showSearchResults(`
+                <strong>Search results for "${word}":</strong><br>
+                Exact match: ${found ? '✅ Found' : '❌ Not found'}<br>
+                Has prefix: ${hasPrefix ? '✅ Yes' : '❌ No'}
+            `);
+        };
+
+        window.autocompleteWord = function() {
+            if (!globalTrie) {
+                showSearchResults('❌ Trie not initialized');
+                return;
+            }
+            
+            const input = document.getElementById('searchInput');
+            const prefix = input.value.trim();
+            
+            if (!prefix) {
+                showSearchResults('Please enter a prefix for autocomplete');
+                return;
+            }
+            
+            const suggestions = globalTrie.autocomplete(prefix);
+            logToConsole(`Autocomplete for "${prefix}" found ${suggestions.length} suggestions`);
+            
+            if (suggestions.length > 0) {
+                const displaySuggestions = suggestions.slice(0, 10); // Limit display to 10
+                showSearchResults(`
+                    <strong>Autocomplete suggestions for "${prefix}" (showing ${displaySuggestions.length} of ${suggestions.length}):</strong><br>
+                    ${displaySuggestions.map(word => `• ${word}`).join('<br>')}
+                `);
+            } else {
+                showSearchResults(`No autocomplete suggestions found for "${prefix}"`);
+            }
+        };
+
+        window.showStats = function() {
+            if (!globalTrie) {
+                showSearchResults('❌ Trie not initialized');
+                return;
+            }
+            
+            const wordCount = globalTrie.countWords();
+            logToConsole(`Trie contains ${wordCount} words`);
+            showSearchResults(`
+                <strong>Trie Statistics:</strong><br>
+                Total words: ${wordCount.toLocaleString()}<br>
+                Memory usage: ${(JSON.stringify(globalTrie.root).length / 1024).toFixed(2)} KB (approximate)
+            `);
+        };
+
+        window.clearLog = function() {
+            document.getElementById('console').textContent = 'Console cleared...\n';
+        };
+
+        // Initialize everything when page loads
+        window.addEventListener('load', async () => {
+            logToConsole('🚀 Initializing Enhanced Trie demo...');
+            
+            // Check worker support
+            checkWorkerSupport();
+            
+            // Initialize trie
+            const initialized = await initializeTrie();
+            
+            if (initialized) {
+                logToConsole('✅ Enhanced Trie demo ready! Try the test buttons above.');
+            } else {
+                logToConsole('❌ Demo initialization failed. Please check the console for errors.');
+                showResults('❌ Failed to initialize. Please ensure trie.js and worker.js are in the same directory.', true);
+            }
+        });
+
+        // Global error handler for debugging
+        window.addEventListener('error', (event) => {
+            logToConsole(`❌ Global error: ${event.message} at ${event.filename}:${event.lineno}`);
+        });
+
+    </script>
+</body>
+</html>

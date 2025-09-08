@@ -1,6 +1,6 @@
 {
   "name": "trie-search-plus",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Trie-based autocomplete/search library for Node.js, Angular, and React",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

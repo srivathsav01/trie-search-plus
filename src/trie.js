@@ -7,10 +7,232 @@ import TrieNode from './trieNode.js';
 export class Trie {
     constructor() {
       this.root = new TrieNode();
+      this.worker = null;
+      this.workerPromises = new Map();
+      this.promiseId = 0;
+      this.workerIdleTimeout = null;
+      this.WORKER_IDLE_TIME = 30000; // 30 seconds 
     }
   
-    // Insert a word
-    insert(word) {
+    /**
+     * Insert words into the trie.
+     * For large arrays (>500000 items), automatically uses web worker.
+     * @param {string|string[]} input - Word(s) to insert
+     * @param {Object} options - Configuration options
+     * @param {boolean} options.useWorker - Force web worker usage
+     * @param {number} options.chunkSize - Items per batch (default: 100000)
+     * @param {Function} options.onProgress - Progress callback
+     * @returns {Promise} - Resolves when insertion is complete
+     */
+    async insert(input, options = {}) {
+      const {
+        useWorker = false,
+        chunkSize = 100000,
+        onProgress = null
+      } = options;
+
+      if (Array.isArray(input)) {
+        // Use worker for large datasets or when explicitly requested
+        if (useWorker || input.length > 500000) {
+          console.log(`Using web worker for ${input.length} words`);
+          return this._insertWithWorker(input, { chunkSize, onProgress });
+        } else {
+          console.log(`Using main thread for ${input.length} words`);
+          return this._insertBatch(input, onProgress);
+        }
+      } else {
+        this._insert(input);
+        return Promise.resolve();
+      }
+    }
+
+    async _insertWithWorker(words, { chunkSize, onProgress }) {
+      try {
+        if (!this.worker) {
+          console.log('Creating web worker...');
+          this.worker = await this._createWorker();
+        }
+
+        const chunks = this._chunkArray(words, chunkSize);
+        let processedCount = 0;
+        console.log(`Processing ${words.length} words in ${chunks.length} chunks`);
+
+        for (let i = 0; i < chunks.length; i++) {
+          const chunk = chunks[i];
+          console.log(`Processing chunk ${i + 1}/${chunks.length} with ${chunk.length} words`);
+          const processedNodes = await this._sendToWorker({
+            words: chunk
+          });
+
+          // Merge the processed nodes back into main trie
+          this._mergeNodes(processedNodes);
+          this._scheduleWorkerCleanup();
+          processedCount += chunk.length;
+          
+          if (onProgress) {
+            onProgress({
+              processed: processedCount,
+              total: words.length,
+              percentage: Math.round((processedCount / words.length) * 100)
+            });
+          }
+        }
+        console.log(`Worker processing complete: ${processedCount} words processed`);
+
+        return {
+          success: true,
+          processed: processedCount
+        };
+      } catch (error) {
+        console.error('Worker insertion failed:', error);
+        // Fallback to main thread for smaller datasets
+        this._scheduleWorkerCleanup();
+        if (words.length <= 500000) {
+          console.log('Falling back to main thread...');
+          return this._insertBatch(words, onProgress);
+        } else {
+          return {
+            success: false,
+            error: error.message
+          };
+        }
+      }
+    }
+
+    async _insertBatch(words, onProgress) {
+      console.log(`Inserting ${words.length} words on main thread`);
+      words.forEach(word => {
+        if (typeof word === 'string' && word.length > 0) {
+          this._insert(word);
+        }
+      });
+
+      if (onProgress) {
+        onProgress({
+          processed: words.length,
+          total: words.length,
+          percentage: 100
+        });
+      }
+
+      return Promise.resolve({
+        success: true,
+        processed: words.length
+      });
+    }
+
+    async _createWorker() {
+      // Try to create worker with correct path
+      let worker;
+      try {
+        // First try the direct path
+        worker = new Worker('./worker.js');
+      } catch (error) {
+        console.warn('Failed to load ./worker.js, trying alternative paths...');
+        try {
+          // Try relative to the HTML file
+          worker = new Worker('worker.js');
+        } catch (error2) {
+          throw new Error('Could not load worker.js. Make sure the file is in the correct location.');
+        }
+      }
+
+      console.log('Worker created successfully');
+
+      worker.onmessage = (e) => {
+        console.log('Main: Received message from worker', e.data);
+        const { id, success, result, error } = e.data;
+        const promise = this.workerPromises.get(id);
+        
+        if (promise) {
+          this.workerPromises.delete(id);
+          if (success) {
+            promise.resolve(result);
+          } else {
+            promise.reject(new Error(error));
+          }
+        }
+      };
+
+      worker.onerror = (error) => {
+        console.error('Worker error:', error);
+        // Reject all pending promises
+        this.workerPromises.forEach(promise => {
+          promise.reject(new Error('Worker error: ' + error.message));
+        });
+        this.workerPromises.clear();
+      };
+
+      return worker;
+    }
+
+    _sendToWorker(message) {
+      return new Promise((resolve, reject) => {
+        const id = ++this.promiseId;
+        this.workerPromises.set(id, { resolve, reject });
+        console.log(`Main: Sending message to worker with id ${id}`, {
+          wordsCount: message.words?.length
+        });
+        
+        this.worker.postMessage({
+          ...message,
+          id
+        });
+
+        // Timeout after 30 seconds (reduced from 30000 seconds!)
+        setTimeout(() => {
+          if (this.workerPromises.has(id)) {
+            this.workerPromises.delete(id);
+            reject(new Error('Worker timeout'));
+          }
+        }, 30000);
+      });
+    }
+
+    _mergeNodes(words) {
+      console.log(`Merging ${words.length} words from worker into main trie`);
+      words.forEach(word => this._insert(word));
+    }
+
+
+    _chunkArray(array, chunkSize) {
+      const chunks = [];
+      for (let i = 0; i < array.length; i += chunkSize) {
+        chunks.push(array.slice(i, i + chunkSize));
+      }
+      return chunks;
+    }
+
+    _scheduleWorkerCleanup() {
+      // Clear existing timeout
+      if (this.workerIdleTimeout) {
+        clearTimeout(this.workerIdleTimeout);
+      }
+      
+      // Schedule cleanup after idle period
+      this.workerIdleTimeout = setTimeout(() => {
+        this._cleanup();
+      }, this.WORKER_IDLE_TIME);
+    }
+
+
+    _cleanup() {
+      // console.log('Cleaning up web worker');
+      if (this.worker) {
+        this.worker.terminate();
+        this.worker = null;
+      }
+      
+      if (this.workerIdleTimeout) {
+        clearTimeout(this.workerIdleTimeout);
+        this.workerIdleTimeout = null;
+      }
+      
+      this.workerPromises.clear();
+    }
+
+    // Insert a single word
+    _insert(word) {
       let node = this.root;
       for (const char of word) {
         if (!node.children[char]) {
@@ -26,11 +248,11 @@ export class Trie {
         let node = this.root;
         for (const char of word) {
           if (!node.children[char]) {
-            return false; // ❌ if path breaks
+            return false;
           }
           node = node.children[char];
         }
-        return node.isEndOfWord; // ✅ ensure true/false
+        return node.isEndOfWord;
       }
   
     // Delete a word
@@ -181,4 +403,3 @@ export class Trie {
   
   
   export default Trie;
-// module.exports = Trie;
